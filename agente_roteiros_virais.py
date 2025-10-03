@@ -1,4 +1,5 @@
 import os
+import shutil
 import streamlit as st
 import tempfile
 import yt_dlp
@@ -6,33 +7,18 @@ import openai
 import whisper
 import torch
 import imageio_ffmpeg as ffmpeg
-from googleapiclient.discovery import build
 
-# garante que o whisper encontre o ffmpeg em qualquer ambiente
-os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg.get_ffmpeg_exe())
+# ==========================================
+# Garante que o Whisper encontre o ffmpeg
+# ==========================================
+ffmpeg_path = ffmpeg.get_ffmpeg_exe()
+shutil.copy(ffmpeg_path, "/tmp/ffmpeg")  # cria um binário no /tmp
+os.environ["PATH"] = "/tmp:" + os.environ["PATH"]
 
 
-# ===============================
+# ==========================================
 # Funções auxiliares
-# ===============================
-
-def get_youtube_captions(video_id, yt_api_key):
-    """Tenta buscar legendas oficiais via YouTube Data API v3."""
-    try:
-        youtube = build("youtube", "v3", developerKey=yt_api_key)
-        response = youtube.captions().list(part="id", videoId=video_id).execute()
-
-        if "items" not in response or len(response["items"]) == 0:
-            return None  # sem legendas
-
-        caption_id = response["items"][0]["id"]
-        # Atenção: a API oficial só lista legendas; para baixar o texto cru,
-        # precisaria de outro passo (muitas vezes não disponível sem OAuth).
-        # Então aqui a gente só detecta se tem legenda ou não.
-        return "LEGENDAS OFICIAIS DISPONÍVEIS (mas não baixadas via API)."
-    except Exception as e:
-        return None
-
+# ==========================================
 
 def download_audio(url: str) -> str:
     """Baixa apenas o áudio do YouTube e retorna o caminho do arquivo local."""
@@ -64,7 +50,7 @@ def transcribe_whisper_api(audio_path: str, api_key: str):
             )
         return transcript
     except Exception as e:
-        st.warning(f"Falha na API da OpenAI. Caindo para Whisper local. Erro: {e}")
+        st.warning(f"⚠️ Falha na API da OpenAI. Usando Whisper Local. Erro: {e}")
         return None
 
 
@@ -106,16 +92,14 @@ Transcrição original:
     return response.choices[0].message.content
 
 
-# ===============================
+# ==========================================
 # Streamlit App
-# ===============================
+# ==========================================
 
 st.title("🎬 Agente de Roteiros Virais")
 st.write("Cole o link de um vídeo do YouTube **ou faça upload** para gerar um roteiro no formato viral.")
 
 api_key = st.text_input("🔑 Digite sua chave da OpenAI:", type="password")
-yt_api_key = st.text_input("🔑 Digite sua chave da YouTube Data API v3 (opcional):", type="password")
-
 url = st.text_input("📺 URL do vídeo do YouTube:")
 uploaded_file = st.file_uploader("📤 Ou faça upload de um arquivo de vídeo/áudio", type=["mp4", "mp3", "wav", "m4a"])
 
@@ -124,34 +108,29 @@ if st.button("Gerar Roteiro"):
         st.error("Por favor, insira sua chave da OpenAI.")
     else:
         transcript = None
+        audio_path = None
 
         if url:
-            st.info("🔎 Tentando buscar legenda oficial do YouTube...")
-            if yt_api_key:
-                video_id = url.split("v=")[-1]
-                transcript = get_youtube_captions(video_id, yt_api_key)
+            try:
+                st.info("📥 Baixando áudio do YouTube...")
+                audio_path = download_audio(url)
+            except Exception as e:
+                st.warning(f"⚠️ Falha ao baixar do YouTube. Erro: {e}")
 
-            if not transcript:
-                st.info("📥 Tentando baixar áudio do YouTube...")
-                try:
-                    audio_path = download_audio(url)
-                    transcript = transcribe_whisper_api(audio_path, api_key)
-                    if not transcript:
-                        transcript = transcribe_whisper_local(audio_path)
-                except Exception as e:
-                    st.warning(f"Falha ao baixar do YouTube. Erro: {e}")
-
-        if not transcript and uploaded_file is not None:
+        if not audio_path and uploaded_file is not None:
             st.info("📤 Usando arquivo enviado pelo usuário...")
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             temp_file.write(uploaded_file.read())
             audio_path = temp_file.name
-            transcript = transcribe_whisper_api(audio_path, api_key)
-            if not transcript:
-                transcript = transcribe_whisper_local(audio_path)
+
+        if audio_path:
+            with st.spinner("🎙️ Transcrevendo áudio..."):
+                transcript = transcribe_whisper_api(audio_path, api_key)
+                if not transcript:
+                    transcript = transcribe_whisper_local(audio_path)
 
         if transcript:
-            with st.spinner("Gerando roteiro..."):
+            with st.spinner("📝 Gerando roteiro..."):
                 roteiro = gerar_roteiro(transcript, api_key)
 
             st.success("✅ Roteiro gerado com sucesso!")
