@@ -1,6 +1,8 @@
 streamlit
-youtube-transcript-api
 yt-dlp
 openai
+youtube-transcript-api
 python-docx
 reportlab
+openai-whisper
+torch

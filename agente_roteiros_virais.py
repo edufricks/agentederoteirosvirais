@@ -1,28 +1,25 @@
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
 import openai
 import tempfile
-import re
-from docx import Document
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
+import yt_dlp
+import whisper
+import time
 
-# -------- FUNÇÕES AUXILIARES --------
+# -------------------
+# Configuração
+# -------------------
+st.set_page_config(page_title="Agente de Roteiros Virais 🎬", layout="wide")
+st.title("🎬 Agente de Roteiros Virais")
+st.write("Transforme vídeos do YouTube em **transcrição, roteiro viral estruturado e legendas (.srt)**.")
 
-def extract_video_id(url):
-    match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
-    return match.group(1) if match else None
+openai_api_key = st.text_input("🔑 Digite sua chave da OpenAI:", type="password")
+if openai_api_key:
+    openai.api_key = openai_api_key
 
-def get_transcript_youtube(video_id, lang="pt"):
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-        return transcript
-    except:
-        return None
-
+# -------------------
+# Função para baixar áudio
+# -------------------
 def download_audio(video_url):
-    """Baixa o áudio do YouTube usando yt_dlp"""
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -34,141 +31,132 @@ def download_audio(video_url):
         ydl.download([video_url])
     return temp_file.name
 
-def transcribe_whisper_api(audio_path):
-    """Transcreve áudio com Whisper API (OpenAI Cloud)"""
-    with open(audio_path, "rb") as f:
-        transcript = openai.audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            response_format="verbose_json"
-        )
-    return transcript["segments"]
+# -------------------
+# Transcrição via API OpenAI
+# -------------------
+def transcribe_whisper_api(audio_path, retries=3):
+    for attempt in range(retries):
+        try:
+            with open(audio_path, "rb") as f:
+                transcript = openai.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    response_format="verbose_json"
+                )
+            return transcript["segments"]
+        except openai.RateLimitError:
+            wait = (2 ** attempt) * 5
+            st.warning(f"⚠️ Rate limit na nuvem. Tentando novamente em {wait}s...")
+            time.sleep(wait)
+        except Exception as e:
+            st.error(f"Erro API Whisper: {e}")
+            return None
+    return None
 
-def transcript_to_text(transcript):
-    """Transforma transcrição em texto legível"""
-    return " ".join([f"{t['start']:.2f}s: {t['text']}" for t in transcript])
+# -------------------
+# Transcrição via Whisper Local
+# -------------------
+def transcribe_whisper_local(audio_path):
+    st.info("Rodando Whisper local (isso pode levar alguns minutos)...")
+    model = whisper.load_model("small")
+    result = model.transcribe(audio_path)
+    return result["segments"]
 
-def generate_script_with_gpt(transcription):
-    """Reescreve a transcrição no formato viral"""
+# -------------------
+# Pipeline híbrido
+# -------------------
+def transcribe_audio(audio_path):
+    if openai_api_key:  # tenta nuvem primeiro
+        segments = transcribe_whisper_api(audio_path)
+        if segments:
+            return segments
+        else:
+            st.warning("🔄 Falhou na nuvem. Tentando local...")
+            return transcribe_whisper_local(audio_path)
+    else:
+        st.warning("⚠️ Nenhuma chave da OpenAI. Usando Whisper local direto.")
+        return transcribe_whisper_local(audio_path)
+
+# -------------------
+# Geração do roteiro estruturado
+# -------------------
+def gerar_roteiro(transcricao_texto):
+    if not openai_api_key:
+        st.error("⚠️ Você precisa inserir sua chave da OpenAI para gerar o roteiro estruturado.")
+        return None
+    
     prompt = f"""
-Você é um especialista em roteiros virais de YouTube.  
-Reescreva o vídeo abaixo no formato do seguinte diagrama:
+    Você é um roteirista especializado em vídeos virais para YouTube e TikTok.
+    Reescreva o roteiro a partir desta transcrição de vídeo:
 
-1. **5 segundos iniciais (gancho explosivo refletindo a thumb)**  
-   - Sugira também recursos visuais/mosaicos que reforcem.  
+    {transcricao_texto}
 
-2. **30 segundos de contexto e questionamento**  
+    Estruture seguindo este formato:
+    1. **Hook inicial (0-15s)** – frase impactante que prende a atenção.
+    2. **Apresentação rápida** – explique quem fala e por que o público deve ouvir.
+    3. **Desenvolvimento principal (conteúdo em blocos de 20-40s)** – organize a narrativa em tópicos com sugestões de cortes e recursos visuais.
+    4. **Inserções visuais sugeridas** – indique onde incluir imagens, gráficos, memes ou efeitos para manter a retenção.
+    5. **Call to Action (final)** – sugestão de CTA claro e envolvente (curtir, comentar, seguir).
 
-3. **90 segundos alternando entre momentos opostos**  
+    Além disso:
+    - Marque sugestões de minutagem aproximada (com base na transcrição).
+    - Dê ideias para cortes dinâmicos que ajudem a manter a retenção.
+    - Sugira ajustes no tom de voz e ritmo.
+    - Se identificar momentos de baixa energia, proponha cortes ou reforços narrativos.
 
-4. **Resposta superando expectativas**  
+    Entregue em formato bem organizado, pronto para ser usado em edição.
+    """
 
-5. **Opinião final**  
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": "Você é um especialista em roteiros virais para YouTube e TikTok."},
+                      {"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Erro ao gerar roteiro: {e}")
+        return None
 
-6. **Fechamento (CTA)**  
+# -------------------
+# Interface principal
+# -------------------
+url = st.text_input("📺 Cole o link do vídeo do YouTube:")
 
-Além disso, sugira:  
-- **Título viral** (máx. 60 caracteres)  
-- **Ideia de Thumbnail**  
-- **Clipes curtos (Shorts/TikTok)** com minutagem  
-- **Sugestões de edição** (inserts, prints, mosaicos etc).  
+if st.button("🚀 Processar vídeo"):
+    if url:
+        with st.spinner("Baixando áudio..."):
+            audio_path = download_audio(url)
 
-Transcrição:  
-{transcription}
-"""
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    return response.choices[0].message["content"]
+        with st.spinner("Transcrevendo..."):
+            segments = transcribe_audio(audio_path)
 
-def export_docx(text):
-    doc = Document()
-    doc.add_paragraph(text)
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-    doc.save(temp_file.name)
-    return temp_file.name
+        if segments:
+            st.success("✅ Transcrição concluída!")
 
-def export_pdf(text):
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    doc = SimpleDocTemplate(temp_file.name)
-    styles = getSampleStyleSheet()
-    story = [Paragraph(p, styles["Normal"]) for p in text.split("\n")]
-    for s in story:
-        s.spaceAfter = 12
-    doc.build(story)
-    return temp_file.name
+            # Mostrar transcrição bruta
+            transcript_text = "\n".join([f"[{seg['start']:.2f}s] {seg['text']}" for seg in segments])
+            st.subheader("📄 Transcrição")
+            st.text_area("Transcrição completa:", transcript_text, height=300)
 
-def export_srt(transcript):
-    srt_content = ""
-    for i, t in enumerate(transcript, start=1):
-        start = t['start']
-        end = t['start'] + t['duration']
-        srt_content += f"{i}\n"
-        srt_content += f"{format_srt_time(start)} --> {format_srt_time(end)}\n"
-        srt_content += t['text'] + "\n\n"
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".srt")
-    with open(temp_file.name, "w", encoding="utf-8") as f:
-        f.write(srt_content)
-    return temp_file.name
+            # Exportar .srt
+            srt_content = ""
+            for i, seg in enumerate(segments, start=1):
+                start_time = time.strftime('%H:%M:%S', time.gmtime(seg['start']))
+                end_time = time.strftime('%H:%M:%S', time.gmtime(seg.get('end', seg['start'] + seg['duration'])))
+                srt_content += f"{i}\n{start_time},000 --> {end_time},000\n{seg['text']}\n\n"
 
-def format_srt_time(seconds):
-    millis = int((seconds - int(seconds)) * 1000)
-    seconds = int(seconds)
-    hrs = seconds // 3600
-    mins = (seconds % 3600) // 60
-    secs = seconds % 60
-    return f"{hrs:02}:{mins:02}:{secs:02},{millis:03}"
+            st.download_button("⬇️ Baixar legendas (.srt)", srt_content, "transcricao.srt", "text/plain")
 
-# -------- INTERFACE STREAMLIT --------
+            # Gerar roteiro viral estruturado
+            with st.spinner("Gerando roteiro estruturado..."):
+                roteiro = gerar_roteiro(transcript_text)
 
-st.set_page_config(page_title="Agente de Roteiros Virais", layout="wide")
-st.title("🎬 Agente de Roteiros Virais")
-
-# Campo para chave da OpenAI
-api_key = st.text_input("🔑 Insira sua chave da OpenAI:", type="password")
-
-if not api_key:
-    st.warning("⚠️ Insira sua chave da OpenAI para continuar.")
-    st.stop()
-
-openai.api_key = api_key
-
-url = st.text_input("Cole o link do vídeo do YouTube:")
-
-if url:
-    video_id = extract_video_id(url)
-    if video_id:
-        st.video(f"https://www.youtube.com/watch?v={video_id}")
-
-        with st.spinner("Buscando transcrição..."):
-            transcript = get_transcript_youtube(video_id)
-
-        if not transcript:
-            st.warning("❌ Não encontrei legendas. Vou transcrever com Whisper API...")
-            with st.spinner("Baixando áudio e transcrevendo..."):
-                audio_path = download_audio(url)
-                transcript = transcribe_whisper_api(audio_path)
-
-        # Exibir transcrição
-        st.subheader("📝 Transcrição")
-        text_transcript = transcript_to_text(transcript)
-        with st.expander("Ver transcrição completa"):
-            st.write(text_transcript)
-
-        if st.button("Gerar Roteiro no Formato Viral"):
-            with st.spinner("Gerando roteiro com GPT..."):
-                roteiro = generate_script_with_gpt(text_transcript)
-
-            st.subheader("📜 Roteiro Final")
-            st.markdown(roteiro)
-
-            # Exportações
-            docx_file = export_docx(roteiro)
-            pdf_file = export_pdf(roteiro)
-            srt_file = export_srt(transcript)
-
-            st.download_button("⬇️ Baixar DOCX", data=open(docx_file, "rb"), file_name="roteiro.docx")
-            st.download_button("⬇️ Baixar PDF", data=open(pdf_file, "rb"), file_name="roteiro.pdf")
-            st.download_button("⬇️ Baixar SRT", data=open(srt_file, "rb"), file_name="transcricao.srt")
+            if roteiro:
+                st.subheader("🎬 Roteiro Viral Estruturado")
+                st.markdown(roteiro)
+                st.download_button("⬇️ Baixar roteiro (.txt)", roteiro, "roteiro_viral.txt", "text/plain")
+    else:
+        st.warning("Insira um link válido do YouTube.")
