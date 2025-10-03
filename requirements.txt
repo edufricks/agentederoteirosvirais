@@ -3,4 +3,5 @@ openai>=1.0.0
 yt-dlp
 whisper
 moviepy
+imageio[ffmpeg]
 
