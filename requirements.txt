@@ -1,0 +1,6 @@
+streamlit
+youtube-transcript-api
+pytube
+openai
+python-docx
+reportlab
