@@ -1,6 +1,6 @@
 streamlit
 youtube-transcript-api
-pytube
+yt-dlp
 openai
 python-docx
 reportlab

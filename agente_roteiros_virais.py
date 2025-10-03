@@ -1,10 +1,9 @@
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from pytube import YouTube
+import yt_dlp
 import openai
 import tempfile
 import re
-import os
 from docx import Document
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
@@ -23,13 +22,20 @@ def get_transcript_youtube(video_id, lang="pt"):
         return None
 
 def download_audio(video_url):
-    yt = YouTube(video_url)
-    stream = yt.streams.filter(only_audio=True).first()
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    stream.download(filename=temp_file.name)
+    """Baixa o áudio do YouTube usando yt_dlp"""
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': temp_file.name,
+        'quiet': True,
+        'noplaylist': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([video_url])
     return temp_file.name
 
 def transcribe_whisper_api(audio_path):
+    """Transcreve áudio com Whisper API (OpenAI Cloud)"""
     with open(audio_path, "rb") as f:
         transcript = openai.audio.transcriptions.create(
             model="whisper-1",
@@ -39,9 +45,11 @@ def transcribe_whisper_api(audio_path):
     return transcript["segments"]
 
 def transcript_to_text(transcript):
+    """Transforma transcrição em texto legível"""
     return " ".join([f"{t['start']:.2f}s: {t['text']}" for t in transcript])
 
 def generate_script_with_gpt(transcription):
+    """Reescreve a transcrição no formato viral"""
     prompt = f"""
 Você é um especialista em roteiros virais de YouTube.  
 Reescreva o vídeo abaixo no formato do seguinte diagrama:
