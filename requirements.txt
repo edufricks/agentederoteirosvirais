@@ -4,3 +4,4 @@ openai
 openai-whisper
 torch
 imageio[ffmpeg]
+google-api-python-client
