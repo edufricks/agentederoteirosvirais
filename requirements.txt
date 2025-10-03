@@ -1,6 +1,6 @@
 streamlit
+openai>=1.0.0
 yt-dlp
-openai
-openai-whisper
-torch
-imageio[ffmpeg]
+whisper
+moviepy
+
