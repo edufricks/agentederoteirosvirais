@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 from pytube import YouTube
@@ -6,23 +5,17 @@ import openai
 import tempfile
 import re
 import os
-
 from docx import Document
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 
-# Configuração da API
-openai.api_key = st.secrets["OPENAI_API_KEY"]
-
-# -------- FUNÇÕES --------
+# -------- FUNÇÕES AUXILIARES --------
 
 def extract_video_id(url):
-    """Extrai o ID do vídeo a partir da URL do YouTube"""
     match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
     return match.group(1) if match else None
 
 def get_transcript_youtube(video_id, lang="pt"):
-    """Tenta baixar a transcrição nativa do YouTube"""
     try:
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
         return transcript
@@ -30,7 +23,6 @@ def get_transcript_youtube(video_id, lang="pt"):
         return None
 
 def download_audio(video_url):
-    """Baixa apenas o áudio do vídeo do YouTube"""
     yt = YouTube(video_url)
     stream = yt.streams.filter(only_audio=True).first()
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -38,7 +30,6 @@ def download_audio(video_url):
     return temp_file.name
 
 def transcribe_whisper_api(audio_path):
-    """Transcreve áudio usando Whisper API (nuvem)"""
     with open(audio_path, "rb") as f:
         transcript = openai.audio.transcriptions.create(
             model="whisper-1",
@@ -48,11 +39,9 @@ def transcribe_whisper_api(audio_path):
     return transcript["segments"]
 
 def transcript_to_text(transcript):
-    """Converte lista de blocos em texto contínuo"""
     return " ".join([f"{t['start']:.2f}s: {t['text']}" for t in transcript])
 
 def generate_script_with_gpt(transcription):
-    """Envia a transcrição para o GPT reescrever segundo o modelo"""
     prompt = f"""
 Você é um especialista em roteiros virais de YouTube.  
 Reescreva o vídeo abaixo no formato do seguinte diagrama:
@@ -87,7 +76,6 @@ Transcrição:
     return response.choices[0].message["content"]
 
 def export_docx(text):
-    """Exporta o roteiro em DOCX"""
     doc = Document()
     doc.add_paragraph(text)
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
@@ -95,17 +83,16 @@ def export_docx(text):
     return temp_file.name
 
 def export_pdf(text):
-    """Exporta o roteiro em PDF"""
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(temp_file.name)
     styles = getSampleStyleSheet()
     story = [Paragraph(p, styles["Normal"]) for p in text.split("\n")]
-    for s in story: s.spaceAfter = 12
+    for s in story:
+        s.spaceAfter = 12
     doc.build(story)
     return temp_file.name
 
 def export_srt(transcript):
-    """Exporta a transcrição com tempo em formato SRT"""
     srt_content = ""
     for i, t in enumerate(transcript, start=1):
         start = t['start']
@@ -119,7 +106,6 @@ def export_srt(transcript):
     return temp_file.name
 
 def format_srt_time(seconds):
-    """Formata tempo para SRT (hh:mm:ss,ms)"""
     millis = int((seconds - int(seconds)) * 1000)
     seconds = int(seconds)
     hrs = seconds // 3600
@@ -131,6 +117,15 @@ def format_srt_time(seconds):
 
 st.set_page_config(page_title="Agente de Roteiros Virais", layout="wide")
 st.title("🎬 Agente de Roteiros Virais")
+
+# Campo para chave da OpenAI
+api_key = st.text_input("🔑 Insira sua chave da OpenAI:", type="password")
+
+if not api_key:
+    st.warning("⚠️ Insira sua chave da OpenAI para continuar.")
+    st.stop()
+
+openai.api_key = api_key
 
 url = st.text_input("Cole o link do vídeo do YouTube:")
 
