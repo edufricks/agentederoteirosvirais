@@ -1,7 +1,8 @@
 streamlit
 openai>=1.0.0
 torch
-whisper
+openai-whisper
 imageio-ffmpeg
+
 
 
