@@ -1,8 +1,10 @@
-streamlit
-openai>=1.0.0
-torch
-openai-whisper
-imageio-ffmpeg
+streamlit==1.38.0
+openai==1.44.0
+torch==2.4.1
+whisper==1.1.10
+imageio-ffmpeg==0.4.9
+ffmpeg-python==0.2.0
+tqdm==4.66.4
 
 
 

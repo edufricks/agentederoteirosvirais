@@ -1,33 +1,30 @@
 import os
+import tempfile
 import shutil
 import streamlit as st
-import tempfile
 import openai
 import whisper
 import torch
+import time
 import imageio_ffmpeg as ffmpeg
 
 # ==========================================
-# Configura ffmpeg para Whisper local
+# Corrige problema do ffmpeg para Whisper local
 # ==========================================
-try:
-    ffmpeg_path = ffmpeg.get_ffmpeg_exe()
-    if not os.path.exists("/tmp/ffmpeg"):
-        shutil.copy(ffmpeg_path, "/tmp/ffmpeg")
-    os.environ["PATH"] = "/tmp:" + os.environ["PATH"]
-except Exception as e:
-    st.warning(f"⚠️ Falha ao configurar ffmpeg: {e}")
-
+ffmpeg_path = ffmpeg.get_ffmpeg_exe()
+shutil.copy(ffmpeg_path, "/tmp/ffmpeg")
+os.environ["PATH"] = "/tmp:" + os.environ["PATH"]
 
 # ==========================================
-# Funções auxiliares
+# Funções de Transcrição
 # ==========================================
 
-def transcribe_whisper_api(audio_path: str, api_key: str):
-    """Transcreve com Whisper API da OpenAI."""
+def transcribe_with_openai(audio_path, api_key):
+    """Transcreve usando a API da OpenAI."""
+    openai.api_key = api_key
     try:
-        client = openai.OpenAI(api_key=api_key)
         with open(audio_path, "rb") as f:
+            client = openai.OpenAI(api_key=api_key)
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
@@ -39,123 +36,101 @@ def transcribe_whisper_api(audio_path: str, api_key: str):
         return None
 
 
-def transcribe_whisper_local(audio_path: str):
-    """Transcreve com Whisper rodando localmente (com fallback seguro)."""
+def transcribe_whisper_local(audio_path):
+    """Transcreve com modelo Whisper local."""
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = whisper.load_model("base", device=device)
-        result = model.transcribe(audio_path, fp16=False)
+        result = model.transcribe(audio_path)
         return result["text"]
     except Exception as e:
         st.error(f"❌ Erro no Whisper local: {e}")
         return None
 
+# ==========================================
+# Função de geração de roteiro
+# ==========================================
 
-def gerar_prompt(transcricao: str, fidelidade: str):
-    """Gera o prompt de acordo com o nível de fidelidade selecionado."""
+def gerar_roteiro(transcricao, api_key, fidelidade):
+    client = openai.OpenAI(api_key=api_key)
 
-    base_prompt = f"""
-Você é um roteirista especialista em vídeos virais com alta retenção.
-Sua missão é transformar a transcrição abaixo em um roteiro no formato viral, mantendo a ordem cronológica e o ritmo envolvente.
+    if fidelidade == "Alta":
+        nivel_prompt = (
+            "Mantenha todos os nomes, eventos, datas e detalhes factuais reais. "
+            "Priorize fidelidade total à transcrição original. "
+            "Use frases curtas e fortes, mas preserve cada fato relevante."
+        )
+    elif fidelidade == "Média":
+        nivel_prompt = (
+            "Mantenha a maioria dos nomes e eventos reais, mas ajuste a narrativa "
+            "para ficar fluida e natural em vídeo curto, sem inventar fatos novos."
+        )
+    else:
+        nivel_prompt = (
+            "Resuma e simplifique as histórias, mantendo apenas o essencial para o impacto emocional."
+        )
 
-🎯 OBJETIVO:
-Criar um roteiro que conte todas as histórias e informações da transcrição de forma emocional e cinematográfica — respeitando os fatos e mantendo o interesse do público até o final.
+    prompt = f"""
+Você é um roteirista especialista em vídeos virais.
+Sua missão é transformar a transcrição abaixo em um roteiro envolvente e cronológico,
+seguindo o ritmo natural do vídeo e cobrindo todas as histórias narradas.
 
-⚙️ Nível de fidelidade: {fidelidade}
-"""
+⚙️ Diretrizes principais:
+1. Mantenha a ordem cronológica dos fatos.
+2. Use pausas naturais e transições suaves a cada mudança de tema.
+3. Divida o texto em ritmo de 90 segundos por bloco de fala.
+4. Em cada bloco, explore:
+   - Contrastes fortes (ex: derrota → superação, perda → vitória)
+   - Curiosidade e reviravolta emocional
+5. Ao final, inclua:
+   - Opinião ou reflexão final (recompensa emocional)
+   - CTA para seguir ou curtir
 
-    if fidelidade == "Alta fidelidade (máxima precisão factual)":
-        detalhes = """
-Regras específicas:
-1. Nenhum dado pode ser omitido — inclua todos os nomes, números, locais, espécies, medidas, curiosidades e termos originais.
-2. Preserve 100% da veracidade factual.
-3. Reescreva com fluidez, mas nunca resuma termos técnicos.
-4. Respeite rigorosamente a ordem cronológica.
-5. Transforme os fatos em narrativa envolvente e emocional.
-"""
-    elif fidelidade == "Equilibrada (entre precisão e narrativa)":
-        detalhes = """
-Regras específicas:
-1. Mantenha todos os dados relevantes, mas priorize fluidez e ritmo.
-2. Pode condensar trechos mantendo sentido e principais fatos.
-3. Use ganchos e pausas para reter atenção.
-4. Preserve a ordem cronológica e os fatos principais.
-"""
-    else:  # Criativa
-        detalhes = """
-Regras específicas:
-1. Use os fatos como base, mas pode reescrever criativamente trechos pouco claros.
-2. Mantenha a essência e o espírito de cada história.
-3. Crie ritmo e emoção com liberdade estilística.
-"""
+🎯 Fidelidade de conteúdo: {fidelidade}
+{nivel_prompt}
 
-    estrutura = """
-🧩 Estrutura obrigatória:
+📜 Estrutura esperada:
+- Título chamativo
+- Ideia de thumb (imagem + texto)
+- Blocos de roteiro cronológicos (com base no áudio)
+- Sugestões para Shorts (3)
+- Sugestões de edição (3)
 
-Início:
-   - 5 segundos que reflitam a thumb (impacto e curiosidade)
-   - Até 30 segundos de contexto e questionamento
-
-Meio (quantos blocos forem necessários):
-   - Cada bloco (~90s) deve:
-       a) Alternar entre momentos opostos (ex: dúvida vs conquista)
-       b) Fechar com uma resposta ou virada inesperada
-
-Fim:
-   - Recompensa final: opinião ou reflexão
-   - CTA (convite para seguir, curtir ou comentar)
-
-🪄 Linguagem:
-- Frases curtas, interativas e naturais.
-- Interrogações e pausas estratégicas.
-- Emoção e ritmo como narrativas virais.
-
-No final, adicione:
-- 🎬 Título chamativo
-- 🖼️ Ideia de Thumb (imagem + texto)
-- 🎞️ 3 ideias de Shorts
-- ✂️ 3 sugestões de edição (efeitos e cortes)
-
-Transcrição original:
+🗣️ Transcrição original:
 \"\"\"{transcricao}\"\"\"
 """
 
-    return base_prompt + detalhes + estrutura
-
-
-def gerar_roteiro(transcricao: str, api_key: str, fidelidade: str):
-    """Gera o roteiro final no formato viral."""
-    client = openai.OpenAI(api_key=api_key)
-    prompt = gerar_prompt(transcricao, fidelidade)
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
-    )
-
-    return response.choices[0].message.content
-
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"❌ Erro ao gerar roteiro: {e}")
+        return None
 
 # ==========================================
-# Streamlit App
+# INTERFACE STREAMLIT
 # ==========================================
 
-st.title("🎬 Agente de Roteiros Virais 2.2")
-st.write("Faça upload de um vídeo ou áudio para gerar um roteiro fiel e envolvente no formato viral.")
+st.set_page_config(page_title="Agente de Roteiros Virais", page_icon="🎬", layout="centered")
+st.title("🎬 Agente de Roteiros Virais")
+st.write("Envie um vídeo ou áudio para gerar automaticamente um roteiro viral com base na transcrição.")
 
 api_key = st.text_input("🔑 Digite sua chave da OpenAI:", type="password")
 
-uploaded_file = st.file_uploader("📤 Upload de vídeo/áudio", type=["mp4", "mp3", "wav", "m4a"])
+uploaded_file = st.file_uploader(
+    "📤 Envie um arquivo de vídeo ou áudio",
+    type=["mp4", "mp3", "wav", "m4a", "mov"]
+)
 
-fidelidade = st.selectbox(
-    "🎯 Nível de fidelidade do roteiro:",
-    [
-        "Alta fidelidade (máxima precisão factual)",
-        "Equilibrada (entre precisão e narrativa)",
-        "Criativa (ênfase na emoção e ritmo)"
-    ],
-    index=1
+fidelidade = st.radio(
+    "🎯 Nível de fidelidade ao conteúdo original:",
+    ["Alta", "Média", "Baixa"],
+    index=0,
+    horizontal=True
 )
 
 if st.button("🚀 Gerar Roteiro"):
@@ -164,31 +139,35 @@ if st.button("🚀 Gerar Roteiro"):
     elif not uploaded_file:
         st.error("Envie um arquivo de vídeo ou áudio para continuar.")
     else:
-        progress_bar = st.progress(0)
+        with st.spinner("⏳ Processando arquivo..."):
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            temp_file.write(uploaded_file.read())
+            video_path = temp_file.name
+            time.sleep(1)
 
-        st.info("📤 Salvando arquivo temporário...")
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        temp_file.write(uploaded_file.read())
-        audio_path = temp_file.name
-        progress_bar.progress(10)
+        progress_text = "🎙️ Transcrevendo áudio..."
+        progress_bar = st.progress(0, text=progress_text)
 
-        with st.spinner("🎙️ Transcrevendo áudio..."):
-            transcript = transcribe_whisper_api(audio_path, api_key)
-            progress_bar.progress(50)
-            if not transcript:
-                transcript = transcribe_whisper_local(audio_path)
-            progress_bar.progress(70)
+        transcript = transcribe_with_openai(video_path, api_key)
+        progress_bar.progress(50, text="🎧 Quase lá...")
+
+        if not transcript:
+            transcript = transcribe_whisper_local(video_path)
+
+        progress_bar.progress(100, text="✅ Transcrição concluída!")
 
         if transcript:
-            with st.spinner(f"📝 Gerando roteiro ({fidelidade.lower()})..."):
-                roteiro = gerar_roteiro(transcript, api_key, fidelidade)
-                progress_bar.progress(100)
-
-            st.success("✅ Roteiro gerado com sucesso!")
-            st.markdown("### 📜 Transcrição")
+            st.subheader("🗒️ Transcrição")
             st.write(transcript)
 
-            st.markdown("### 🎯 Roteiro Viral")
-            st.write(roteiro)
+            with st.spinner("📝 Gerando roteiro viral..."):
+                roteiro = gerar_roteiro(transcript, api_key, fidelidade)
+
+            if roteiro:
+                st.success("✅ Roteiro gerado com sucesso!")
+                st.markdown("### 🎬 Roteiro Final")
+                st.write(roteiro)
+            else:
+                st.error("❌ Não foi possível gerar o roteiro.")
         else:
-            st.error("❌ Não foi possível obter transcrição do vídeo.")
+            st.error("❌ Não foi possível obter a transcrição do vídeo.")
