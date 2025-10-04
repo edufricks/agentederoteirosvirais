@@ -1,147 +1,169 @@
 import os
-import streamlit as st
 import tempfile
+import streamlit as st
 import yt_dlp
-import openai
 import whisper
-from moviepy.editor import VideoFileClip
+from openai import OpenAI
 
-# -----------------------
-# Função para baixar áudio de YouTube
-# -----------------------
-def download_audio(url):
+# =========================
+# Inicialização do cliente
+# =========================
+def init_openai():
+    openai_key = st.text_input("🔑 Insira sua chave da OpenAI:", type="password")
+    if openai_key:
+        os.environ["OPENAI_API_KEY"] = openai_key
+        return OpenAI(api_key=openai_key)
+    return None
+
+# =========================
+# Download YouTube (áudio)
+# =========================
+def download_youtube_audio(url):
+    temp_dir = tempfile.mkdtemp()
+    out_path = os.path.join(temp_dir, "audio.mp3")
+
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': tempfile.mktemp(suffix=".mp3"),
-        'quiet': True
+        'outtmpl': out_path,
+        'quiet': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
 
-# -----------------------
-# Transcrição - Whisper API (cloud)
-# -----------------------
-def transcribe_whisper_api(file_path, api_key):
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        return out_path
+    except Exception as e:
+        st.error(f"Erro ao baixar áudio do YouTube: {e}")
+        return None
+
+# =========================
+# Transcrição via OpenAI API
+# =========================
+def transcribe_openai(client, file_path):
+    try:
         with open(file_path, "rb") as f:
             transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                response_format="text"
+                model="gpt-4o-transcribe",
+                file=f
             )
-        return transcript
+        return transcript.text
     except Exception as e:
         st.warning(f"Falha na API da OpenAI. Caindo para Whisper local. Erro: {e}")
         return None
 
-# -----------------------
-# Transcrição - Whisper local
-# -----------------------
+# =========================
+# Transcrição via Whisper local
+# =========================
 def transcribe_whisper_local(file_path):
     try:
         model = whisper.load_model("base")
         result = model.transcribe(file_path)
         return result["text"]
     except Exception as e:
-        st.warning(f"Falha no Whisper local. Caindo para MoviePy. Erro: {e}")
+        st.warning(f"Erro no Whisper local. Tentando fallback final... {e}")
         return None
 
-# -----------------------
-# Transcrição - MoviePy (Fallback final - extrai só áudio bruto)
-# -----------------------
-def transcribe_moviepy(file_path):
+# =========================
+# Fallback com MoviePy
+# =========================
+def extract_audio_moviepy(file_path):
     try:
+        from moviepy.editor import VideoFileClip
         video = VideoFileClip(file_path)
         audio_path = tempfile.mktemp(suffix=".wav")
         video.audio.write_audiofile(audio_path, logger=None)
-        return f"[Áudio extraído em {audio_path}, mas sem transcrição automática disponível.]"
+        return audio_path
     except Exception as e:
         st.error(f"Erro até no fallback MoviePy: {e}")
         return None
 
-# -----------------------
-# Gerar roteiro viral
-# -----------------------
-def gerar_roteiro(transcricao, api_key):
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key)
-
+# =========================
+# Geração do roteiro viral
+# =========================
+def gerar_roteiro(client, transcricao):
     prompt = f"""
-Você é um roteirista especialista em vídeos virais. 
-Sua missão é transformar a transcrição abaixo em um roteiro no formato viral.
+    Você é um roteirista especializado em vídeos virais para YouTube Shorts.
+    Reescreva a transcrição abaixo em um ROTEIRO VIRAL estruturado.
 
-⚠️ Regras obrigatórias:
-1. Cada bloco (gancho, contexto/questionamento, alternância de opostos, resposta inesperada, opinião final, CTA) deve conter pelo menos **uma história real da transcrição**, reescrita de forma impactante e envolvente.
-2. Não invente fatos. Use nomes, eventos, datas e histórias reais da transcrição. Se algo não estiver claro, reescreva criativamente mas sem criar fatos novos.
-3. Mantenha a estrutura **fixa**:
-   - Gancho inicial (com impacto e curiosidade)
-   - Contexto/questionamento (incluindo pelo menos 1 história real da transcrição)
-   - Alternância de opostos (críticas vs conquistas, fracassos vs vitórias — com base no que ocorreu no vídeo)
-   - Resposta inesperada (a reviravolta ou lição mais surpreendente — baseada no vídeo)
-   - Opinião final (lição inspiradora ou conclusão)
-   - CTA (convite para engajamento ou próxima ação)
-4. Além do roteiro, gere também:
-   - Título chamativo
-   - Ideia de Thumb (imagem + texto)
-   - Sugestões para Shorts (3 ideias)
-   - Sugestões de edição (3 ideias, incluindo cortes e efeitos)
+    Estrutura obrigatória:
+    - Gancho inicial
+    - Contexto/questionamento (30s, deve incluir trechos REESCRITOS da história original para corroborar)
+    - Alternância de opostos
+    - Resposta inesperada
+    - Opinião final
+    - CTA
+    Além disso: título, sugestão de thumbnail, sugestões de edição.
 
-Transcrição original:
-\"\"\"{transcricao}\"\"\"
-"""
+    Transcrição original:
+    {transcricao}
+    """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Você é um roteirista criativo especialista em narrativas virais."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Erro ao gerar roteiro: {e}")
+        return None
 
-    return response.choices[0].message.content.strip()
+# =========================
+# App principal Streamlit
+# =========================
+def main():
+    st.title("🎬 Agente de Roteiros Virais")
+    st.write("Gere roteiros virais a partir de vídeos do YouTube ou upload manual.")
 
-# -----------------------
-# Interface Streamlit
-# -----------------------
-st.title("🎬 Agente de Roteiros Virais")
-st.write("Transforme qualquer vídeo em um roteiro viral pronto para edição.")
+    client = init_openai()
+    if not client:
+        st.warning("Insira sua chave da OpenAI para continuar.")
+        return
 
-# Entrada da chave da OpenAI
-api_key = st.text_input("🔑 Insira sua chave da OpenAI:", type="password")
+    option = st.radio("Escolha a fonte:", ["YouTube Link", "Upload Manual"])
 
-if api_key:
-    opcao = st.radio("Selecione a origem do vídeo:", ["YouTube", "Upload manual"])
+    transcricao = None
+    if option == "YouTube Link":
+        url = st.text_input("Cole o link do YouTube:")
+        if st.button("Transcrever do YouTube"):
+            audio_file = download_youtube_audio(url)
+            if audio_file:
+                transcricao = transcribe_openai(client, audio_file)
+                if not transcricao:
+                    transcricao = transcribe_whisper_local(audio_file)
 
-    video_path = None
-    if opcao == "YouTube":
-        url = st.text_input("Cole o link do vídeo do YouTube:")
-        if url and st.button("Baixar & Transcrever"):
-            with st.spinner("Baixando áudio do YouTube..."):
-                video_path = download_audio(url)
-    else:
-        uploaded_file = st.file_uploader("Faça upload do vídeo:", type=["mp4", "mov", "avi", "mkv"])
-        if uploaded_file is not None:
-            video_path = tempfile.mktemp(suffix=".mp4")
-            with open(video_path, "wb") as f:
-                f.write(uploaded_file.read())
+    elif option == "Upload Manual":
+        uploaded_file = st.file_uploader("Faça upload de um vídeo/áudio", type=["mp4", "mp3", "wav"])
+        if uploaded_file:
+            temp_path = os.path.join(tempfile.mkdtemp(), uploaded_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            if st.button("Transcrever Upload"):
+                transcricao = transcribe_openai(client, temp_path)
+                if not transcricao:
+                    transcricao = transcribe_whisper_local(temp_path)
+                if not transcricao:  # fallback extra
+                    extracted_audio = extract_audio_moviepy(temp_path)
+                    if extracted_audio:
+                        transcricao = transcribe_whisper_local(extracted_audio)
 
-    if video_path:
-        with st.spinner("Transcrevendo áudio..."):
-            transcript = transcribe_whisper_api(video_path, api_key)
-            if not transcript:
-                transcript = transcribe_whisper_local(video_path)
-            if not transcript:
-                transcript = transcribe_moviepy(video_path)
+    if transcricao:
+        st.subheader("📜 Transcrição")
+        st.write(transcricao)
 
-        if transcript:
-            st.subheader("📜 Transcrição")
-            st.write(transcript[:2000] + "..." if len(transcript) > 2000 else transcript)
-
-            with st.spinner("Gerando roteiro viral..."):
-                roteiro = gerar_roteiro(transcript, api_key)
-
-            st.subheader("🎬 Roteiro Viral")
+        roteiro = gerar_roteiro(client, transcricao)
+        if roteiro:
+            st.subheader("🎯 Roteiro Viral")
             st.write(roteiro)
-else:
-    st.info("Por favor, insira sua chave da OpenAI para começar.")
+
+if __name__ == "__main__":
+    main()

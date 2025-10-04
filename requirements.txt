@@ -5,3 +5,4 @@ whisper
 moviepy
 imageio[ffmpeg]
 
+
