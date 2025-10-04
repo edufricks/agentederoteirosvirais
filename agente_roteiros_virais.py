@@ -43,7 +43,7 @@ def transcribe_whisper_local(audio_path: str):
 
 
 def gerar_roteiro(transcricao: str, api_key: str):
-    """Gera o roteiro final no formato viral respeitando a cronologia e os fatos."""
+    """Gera o roteiro final no formato viral respeitando a cronologia."""
     openai.api_key = api_key
 
     prompt = f"""
@@ -102,7 +102,7 @@ Transcrição original:
 # ==========================================
 
 st.title("🎬 Agente de Roteiros Virais")
-st.write("Faça upload de um vídeo ou áudio para gerar um roteiro fiel e envolvente no formato viral.")
+st.write("Faça upload de um vídeo ou áudio para gerar um roteiro no formato viral.")
 
 api_key = st.text_input("🔑 Digite sua chave da OpenAI:", type="password")
 uploaded_file = st.file_uploader("📤 Upload de vídeo/áudio", type=["mp4", "mp3", "wav", "m4a"])
